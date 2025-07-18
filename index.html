@@ -977,13 +977,16 @@
                 </div>
                 <div style="display: flex; justify-content: space-between; margin-bottom: 20px;">
                     <span style="color: #cbd5e0;">คงค้าง:</span>
-                    <span style="color: #fbb040;" id="modal-remaining"></span>
+                    <span id="modal-remaining-text"></span>
                 </div>
             </div>
 
             <div style="margin-bottom: 20px;">
                 <label style="display: block; margin-bottom: 8px; font-weight: 500; color: #cbd5e0; font-size: 14px;">จำนวนเงินที่ชำระ</label>
                 <input type="number" id="payment-amount" placeholder="กรอกจำนวนเงิน" style="width: 100%; padding: 16px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; font-size: 14px; background: rgba(255, 255, 255, 0.05); color: #e2e8f0; backdrop-filter: blur(10px);">
+                <small style="color: #a0aec0; font-size: 12px; margin-top: 4px; display: block;">
+                    💡 สามารถชำระเกินยอดได้ (กรณีค่าส่ง หรือแก้ไขราคา)
+                </small>
             </div>
 
             <div style="display: flex; gap: 10px; justify-content: center;">
@@ -1201,6 +1204,13 @@
                 return;
             }
 
+            // ตรวจสอบสต็อกสำหรับพรีออเดอร์ด้วย
+            const stockItem = stockItems.find(item => item.product === product);
+            if (!stockItem || stockItem.remaining < quantity) {
+                alert(`สต็อกไม่เพียงพอ!\nสต็อกคงเหลือ: ${stockItem ? stockItem.remaining : 0}\nต้องการ: ${quantity}`);
+                return;
+            }
+
             const total = quantity * price;
             const remaining = total - deposit;
 
@@ -1219,10 +1229,17 @@
                 createdAt: new Date().toISOString()
             };
 
+            // หักสต็อกทันทีสำหรับพรีออเดอร์
+            stockItem.sold += quantity;
+            stockItem.remaining -= quantity;
+
             preorders.push(preorder);
             saveToStorage();
             updatePreorderTable();
+            updateStockTable(); // อัปเดตตารางสต็อก
             clearPreorderForm();
+
+            alert(`เพิ่มพรีออเดอร์สำเร็จ!\nสต็อก ${product} คงเหลือ: ${stockItem.remaining}`);
         }
 
         function addReadyOrder() {
@@ -1361,8 +1378,18 @@
         function deleteOrder(orderId, type) {
             if (confirm('คุณต้องการลบรายการนี้หรือไม่?')) {
                 if (type === 'preorder') {
+                    const order = preorders.find(o => o.id == orderId);
+                    if (order) {
+                        // คืนสต็อกเมื่อลบพรีออเดอร์
+                        const stockItem = stockItems.find(item => item.product === order.product);
+                        if (stockItem) {
+                            stockItem.sold -= order.quantity;
+                            stockItem.remaining += order.quantity;
+                        }
+                    }
                     preorders = preorders.filter(o => o.id != orderId);
                     updatePreorderTable();
+                    updateStockTable();
                 } else if (type === 'ready') {
                     const order = readyOrders.find(o => o.id == orderId);
                     if (order) {
@@ -1408,6 +1435,21 @@
                 } else {
                     paymentHistory = 'ยังไม่มีประวัติ';
                 }
+
+                // กำหนดสถานะที่ถูกต้อง
+                let statusText = '';
+                let statusClass = '';
+                
+                if (order.status === 'delivered') {
+                    statusText = 'จัดส่งแล้ว';
+                    statusClass = 'status-delivered';
+                } else if (order.remaining <= 0) {
+                    statusText = 'ชำระครบ';
+                    statusClass = 'status-paid';
+                } else {
+                    statusText = 'รอชำระ';
+                    statusClass = 'status-pending';
+                }
                 
                 row.innerHTML = `
                     <td>${order.customer}</td>
@@ -1419,15 +1461,13 @@
                     <td>${order.remaining.toLocaleString()}</td>
                     <td>${order.address}</td>
                     <td>
-                        <span class="status-badge ${order.status === 'delivered' ? 'status-delivered' : order.remaining === 0 ? 'status-paid' : 'status-pending'}">
-                            ${order.status === 'delivered' ? 'จัดส่งแล้ว' : order.remaining === 0 ? 'ชำระครบ' : 'รอชำระ'}
+                        <span class="status-badge ${statusClass}">
+                            ${statusText}
                         </span>
                     </td>
                     <td style="font-size: 12px; max-width: 200px;">${paymentHistory}</td>
                     <td>
-                        ${order.remaining > 0 ? `
-                            <button class="btn btn-warning" onclick="openPaymentModal('${order.id}')">💰 ชำระเงิน</button>
-                        ` : ''}
+                        <button class="btn btn-warning" onclick="openPaymentModal('${order.id}')">💰 ชำระเงิน</button>
                         ${order.status !== 'delivered' ? `<button class="btn" onclick="markAsDelivered('${order.id}', 'preorder')">จัดส่ง</button>` : ''}
                         <button class="btn btn-danger" onclick="deleteOrder('${order.id}', 'preorder')">ลบ</button>
                     </td>
@@ -1687,10 +1727,13 @@
             select.innerHTML = '<option value="">เลือกสินค้า</option>';
             
             stockItems.forEach(item => {
-                const option = document.createElement('option');
-                option.value = item.product;
-                option.textContent = `${item.product} - ${item.price.toLocaleString()}฿`;
-                select.appendChild(option);
+                // แสดงเฉพาะสินค้าที่มีสต็อกเหลือ (เหมือนพร้อมส่ง)
+                if (item.remaining > 0) {
+                    const option = document.createElement('option');
+                    option.value = item.product;
+                    option.textContent = `${item.product} - ${item.price.toLocaleString()}฿ (คงเหลือ ${item.remaining})`;
+                    select.appendChild(option);
+                }
             });
         }
 
